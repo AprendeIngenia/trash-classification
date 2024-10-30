@@ -1,7 +1,8 @@
 import os
 import sys
 import cv2
-import torch
+import logging as log
+log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -18,7 +19,8 @@ class TrashSystem:
     def run(self):
         while self.cap.isOpened():
             success, frame = self.cap.read()
-            image = self.trash_classificator_system.frame_processing(frame)
+            image, process_log = self.trash_classificator_system.frame_processing(frame)
+            log.info(f"process information: {process_log}")
             if not success:
                 break
 

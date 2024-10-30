@@ -1,6 +1,6 @@
 import torch
 from ultralytics import YOLO
-from trash_classificator.segmentation.models.trash_model import (trash_model_path, trash_classes)
+from trash_classificator.segmentation.models.trash_model import trash_model_path
 
 
 class ModelLoader:
