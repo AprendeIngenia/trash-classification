@@ -4,10 +4,3 @@ test: C:/Users/santi/Desktop/proyectos/trash_classification/training/data/test/
 
 nc: 3
 names: ['cardboard paper', 'metal', 'plastic']
-
-roboflow:
-  workspace: aprendeingenia
-  project: waste-classification-intelligent
-  version: 1
-  license: CC BY 4.0
-  url: https://universe.roboflow.com/aprendeingenia/waste-classification-intelligent/dataset/1
