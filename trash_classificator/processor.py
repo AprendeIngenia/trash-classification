@@ -1,14 +1,13 @@
 import numpy as np
-from typing import Tuple, List, Dict, Any
 
 from trash_classificator.segmentation.main import (SegmentationModelInterface, SegmentationModel)
-from trash_classificator.drawing.track_and_boxes import (DrawDetectionsInterface, DrawDetections)
+from trash_classificator.drawing.main import (DrawingInterface, Drawing)
 
 
 class TrashClassificator:
     def __init__(self):
         self.segmentation: SegmentationModelInterface = SegmentationModel()
-        self.draw_detections: DrawDetectionsInterface = DrawDetections()
+        self.draw_detections: DrawingInterface = Drawing()
 
     def frame_processing(self, image: np.ndarray):
 
