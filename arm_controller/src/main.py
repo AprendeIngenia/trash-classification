@@ -29,14 +29,13 @@ class RobotState:
     IDLE = "idle"
     
 class LEDColors:
-    ERROR = (255, 0, 0)       # Red: Error/Stop
-    WARNING = (255, 150, 0)   # Orange: Warning
-    READY = (0, 255, 0)       # Green: Ready
-    RUNNING = (0, 0, 255)     # Blue: Process Running
-    STANDBY = (255, 255, 0)   # Yellow: Standby
-    SETUP = (255, 255, 255)   # White: Setup
-
-    OBJECT_DETECTED = (0, 255, 155)
+    ERROR = (255, 0, 0)             # Red: Error/Stop
+    WARNING = (255, 150, 0)         # Orange: Warning
+    READY = (0, 255, 0)             # Green: Ready
+    RUNNING = (0, 0, 255)           # Blue: Process Running
+    STANDBY = (255, 255, 0)         # Yellow: Standby
+    SETUP = (255, 255, 255)         # White: Setup
+    OBJECT_DETECTED = (0, 255, 155) # Cyan: Object Detected
 
 # ============================================================================ #
 #                       sensor module
@@ -95,6 +94,13 @@ class SensorModule:
         
     def toggle(self):
         self.touchled.toggle()
+        
+    # general methods
+    def check_sensors(self):
+        return (self.inertial.installed() and
+                self.gripper_distance.installed() and
+                self.base_distance.installed() and
+                self.bumper.installed())
         
 
 # ============================================================================ #
@@ -199,12 +205,6 @@ class ControlModule:
             'gripper': 10
         }
         
-    def check_motors(self):
-        return (self.base_motor.installed() and
-                self.shoulder_motor.installed() and
-                self.elbow_motor.installed() and
-                self.gripper_motor.installed())
-    
     # base motor methods
     def rotate_base_forward(self):
         self.base_motor.spin(FORWARD, self.speeds['base'], RPM)
@@ -242,6 +242,13 @@ class ControlModule:
         self.shoulder_motor.stop()
         self.elbow_motor.stop()
         self.gripper_motor.stop()
+    
+    def check_motors(self):
+        return (self.base_motor.installed() and
+                self.shoulder_motor.installed() and
+                self.elbow_motor.installed() and
+                self.gripper_motor.installed())
+    
 
 # ============================================================================ #
 #                       safety module
@@ -265,6 +272,13 @@ class SafetyModule:
             'elbow': 20,
             'gripper': 10
         }
+    
+    # check methods
+    def check_motors(self):
+        return self.control_module.check_motors()
+    
+    def check_sensors(self):
+        return self.sensor_module.check_sensors()
         
     def check_shoulder_safety(self, current_state: str) -> str:
         if self.sensor_module.is_bumper_pressed():
@@ -318,7 +332,7 @@ class RoboticArmSystem:
         
         # 1. check motors
         if self.state == RobotState.INIT:
-            if self.control_module.check_motors():
+            if self.safety_module.check_sensors() and self.safety_module.check_motors():
                 self.sensor_module.set_color(LEDColors.READY)
                 time.sleep(1)
                 self.state = RobotState.SAFETY_SHOULDER
