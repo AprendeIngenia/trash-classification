@@ -14,29 +14,6 @@
 from vex import *
 import time
 import json
-
-
-# ============================================================================ #
-#                       base interfaces                                         
-# ============================================================================ #
-class BaseModule:
-    def initialize(self) -> bool:
-        """Initialize module and return success status"""
-        return True
-    
-    def check_health(self) -> bool:
-        """Check if module is healthy"""
-        return True
-    
-
-class StateObserver:
-    def on_state_change(self, old_state: str, new_state: str):
-        """Called when state changes"""
-        pass
-    
-    def on_error(self, error_type: str, message: str):
-        """Called when error occurs"""
-        pass
     
     
 # ============================================================================ #
@@ -77,24 +54,6 @@ class RobotState:
     SCAN_COMPLETE = "scan_complete"
     IDLE = "idle"
     
-
-class StateManager:
-    def __init__(self):
-        self.current_state = RobotState.INIT
-        self.observers = []
-        
-    def add_observer(self, observer: StateObserver):
-        self.observers.append(observer)
-        
-    def transition_to(self, new_state: str):
-        old_state = self.current_state
-        self.current_state = new_state
-        for observer in self.observers:
-            observer.on_state_change(old_state, new_state)
-    
-    def get_current_state(self) -> str:
-        return self.current_state
-    
     
 class LEDColors:
     ERROR = (255, 0, 0)             # Red: Error/Stop
@@ -109,73 +68,49 @@ class LEDColors:
 # ============================================================================ #
 #                       communication manager                                  
 # ============================================================================ #
-class CommunicationManager(BaseModule):
-    def __init__(self, config: RobotConfig):
-        self.config = config
+class CommunicationManager:
+    def __init__(self):
         self.serial_port = None
         self.buffer = bytearray()
         self.message_end = b'\n'
         
-    def initialize(self) -> bool:
+    def initialize(self):
         try:
             self.serial_port = open('/dev/serial1', 'rb+')
-            return True
-        except Exception as e:
-            return False
+        except:
+            raise Exception('serial port not available')
         
     def send_message(self, message_type: str, data: dict) -> bool:
-        try:
-            message = {
-                'type': message_type,
-                'data': data,
-                'timestamp': time.time()
-            }
-            encoded_message = json.dumps(message).encode() + self.message_end
-            self.serial_port.write(encoded_message)
-            return True
-        except Exception as e:
-            return False
+        message = {
+            'type': message_type,
+            'data': data,
+            'timestamp': time.time()
+        }
+        encoded_message = json.dumps(message).encode() + self.message_end
+        self.serial_port.write(encoded_message)
+        return True
+    
+    def send_scan_data(self, scan_data: dict):
+        return self.send_message('scan_data', scan_data)
         
+    def send_status(self, status: str, details: dict = {}):
+        data = {'status': status}
+        if details:
+            data.update(details)
+        return self.send_message('status', data)
+    
     def read_message(self):
-        byte = self.serial_port.read(1)
-        if byte:
-            self.buffer.extend(byte)
-            if byte == self.message_end:
-                message = self.buffer[:-1].decode().strip()
-                self.buffer = bytearray()
-                return json.loads(message)
-                #return self._parse_message(message)
-    
-    def _parse_message(self, raw_message: str) -> dict:
-        """convert string to dict"""
-        parts = raw_message.split(',')
-        message_dict = {}
-        for part in parts:
-            if ':' in part:
-                key, value = part.split(':', 1)
-                message_dict[key.strip()] = self._parse_value(value.strip())
-        return message_dict
-    
-    def _parse_value(self, value: str):
-        """convert data type"""
-        try:
-            return int(value)
-        except ValueError:
+        char = self.serial_port.read(1)
+        if char == self.message_end:
+            message = self.buffer.decode()
+            self.buffer = bytearray()
             try:
-                return float(value)
-            except ValueError:
-                if value.lower() == 'true':
-                    return True
-                elif value.lower() == 'false':
-                    return False
-                return value
-        
-            
-    def send_sensor_data(self, sensor_data: dict):
-        return self.send_message('sensor_data', sensor_data)
-        
-    def send_position_data(self, position_data: dict):
-        return self.send_message('position_data', position_data)
+                return json.loads(message)
+            except json.JSONDecodeError:
+                return None
+        else:
+            self.buffer.extend(char)
+        return None
         
     def close(self):
         if self.serial_port:
@@ -185,9 +120,8 @@ class CommunicationManager(BaseModule):
 # ============================================================================ #
 #                       sensor module
 # ============================================================================ #
-class SensorModule(BaseModule):
-    def __init__(self, config: RobotConfig):
-        self.config = config
+class SensorModule:
+    def __init__(self):
         self.brain = Brain()
         self.inertial = Inertial()
         self.gripper_distance = Distance(Ports.PORT7)
@@ -339,7 +273,7 @@ class MappingModule:
 # ============================================================================ #
 #                       control module
 # ============================================================================ #
-class ControlModule(BaseModule):
+class ControlModule:
     def __init__(self, config: RobotConfig):
         self.config = config
         self.base_motor = Motor(Ports.PORT1, True)
@@ -397,7 +331,7 @@ class ControlModule(BaseModule):
 # ============================================================================ #
 #                       safety module
 # ============================================================================ #
-class SafetyModule(BaseModule, StateObserver):
+class SafetyModule:
     def __init__(self,config:RobotConfig, sensor_module: SensorModule, control_module: ControlModule):
         self.config = config
         self.sensor_module = sensor_module
@@ -407,15 +341,6 @@ class SafetyModule(BaseModule, StateObserver):
         
         self.speeds = self.config.MOTOR_PARAMS
         self.safety_params = self.config.SAFETY_PARAMS
-        
-    # states
-    def on_state_change(self, old_state: str, new_state: str):
-        if new_state == RobotState.ERROR:
-            self.handle_error_state()
-            
-    def handle_error_state(self):
-        self.control_module.general_stop()
-        self.sensor_module.set_color(LEDColors.ERROR)
     
     # check methods
     def check_motors(self):
@@ -424,164 +349,252 @@ class SafetyModule(BaseModule, StateObserver):
     def check_sensors(self):
         return self.sensor_module.check_sensors()
         
-    def check_shoulder_safety(self, current_state: str) -> str:
+    def check_shoulder_safety(self) -> bool:
         if self.sensor_module.is_bumper_pressed():
             self.control_module.general_stop()
             self.sensor_module.set_color(LEDColors.ERROR)
             self.control_module.move_shoulder_reverse(self.speeds['shoulder']['safety_speed'])
             time.sleep(2)
             self.control_module.general_stop()
-            return RobotState.SAFETY_GRIPPER
+            return True
         else:
             self.control_module.move_shoulder_forward(self.speeds['shoulder']['speed'])
             self.sensor_module.set_color(LEDColors.WARNING)
-            return current_state
+            return False
         
-    def check_gripper_safety(self, current_state: str) -> str:
+    def check_gripper_safety(self) -> bool:
         gripper_current = self.control_module.get_gripper_current()
         self.control_module.open_gripper(self.speeds['gripper']['safety_speed'])
 
         if gripper_current > self.safety_params['current_limit']:
             self.control_module.general_stop()
-            return RobotState.SCAN_INIT
-        else: 
-            return current_state
+            return True
+        else:
+            return False
 
 # ============================================================================ #
 #                       main module
 # ============================================================================ #
-class RoboticArmSystem:
+class RoboticServices:
     def __init__(self):
         self.config = RobotConfig()
-        self.state_manager = StateManager()
         
         # initialize modules
-        self.sensor_module = SensorModule(self.config)
+        self.sensor_module = SensorModule()
         self.perception_module = PerceptionModule(self.sensor_module)
         self.mapping_module = MappingModule()
         self.control_module = ControlModule(self.config)
         self.safety_module = SafetyModule(self.config, self.sensor_module, self.control_module)
-        self.communication = CommunicationManager(self.config)
+        self.communication = CommunicationManager()
         
-        # register observers
-        self.state_manager.add_observer(self.safety_module)
         
-        # initialize state
+        # -- Variables / banderas internas --
+        # "check_service"
+        self.checked_once = False
+        
+        # "safety_service"
+        self.safety_mode_active = False
+        self.safety_shoulder = False
+        self.safety_gripper = False
+        self.safety_service_loop = True
+        
+        # "scan_service"
+        self.scan_mode_active = False
         self.scan_start_time = 0
         self.scan_timeout = self.config.SAFETY_PARAMS['timeout']
         self.accumulated_rotation = 0
         self.last_angle = 0
+        self.scan_start = True
+        self.scan_update = False
+        self.scan_complete = False
+        self.scan_error = False
     
         # calibrate inertial sensor
         #self.sensor_module.calibrate_intertial_sensor()
-
-    # state machine
-    def update_state(self):
-        current_state = self.state_manager.get_current_state()
-        
-        if current_state == RobotState.ERROR:
-            return
-        
-        # process incoming messages
-        msggggggg = self.communication.read_message()
-
-        
-        try:
-            # 1. check motors
-            if current_state == RobotState.INIT:
-                if self.safety_module.check_sensors() and self.safety_module.check_motors():
-                    self.sensor_module.set_color(LEDColors.READY)
-                    time.sleep(1)
-                    self.state_manager.transition_to(RobotState.SAFETY_SHOULDER)   
-                    
-            # 2. safety check
-            elif current_state == RobotState.SAFETY_SHOULDER:
-                new_state = self.safety_module.check_shoulder_safety(current_state=current_state)
-                if new_state != current_state:
-                    self.state_manager.transition_to(new_state)
-                
-            elif current_state == RobotState.SAFETY_GRIPPER:
-                new_state = self.safety_module.check_gripper_safety(current_state=current_state)
-                if new_state != current_state:
-                    self.state_manager.transition_to(new_state)
-                
-            # 3. scan
-            elif current_state == RobotState.SCAN_INIT:
-                self.start_scan()
-                self.state_manager.transition_to(RobotState.SCANNING)
-                
-            elif current_state == RobotState.SCANNING:
-                self.update_scan()
-                
-            elif current_state == RobotState.SCAN_COMPLETE:
-                objects = self.mapping_module.get_objects_map()
-                total_objects = len(objects)
-                self.sensor_module.set_color(LEDColors.READY)
-                self.sensor_module.print_screen("Objects: {}".format(total_objects), 1, 15)
-                
-        except Exception as e:
-            self.state_manager.transition_to(RobotState.ERROR)
+            
+    # check service
+    def check_service(self) -> bool:
+        if self.safety_module.check_sensors() and self.safety_module.check_motors():
+            self.sensor_module.set_color(LEDColors.READY)
+            return True
+        else:
+            self.sensor_module.set_color(LEDColors.ERROR)
+            return False
     
-    # scan methods
-    def start_scan(self):
+    # safety state service
+    def safety_state_service(self) -> bool:
+        """
+        Called periodically. Performs:
+        - check_shoulder_safety().
+        - when that finishes (True), it passes to check_gripper_safety().
+        - when gripper finishes, it finishes everything.
+        Returns True when the ENTIRE sequence is finished.
+        """
+        
+        while self.safety_service_loop ==  True:
+            if not self.safety_shoulder:
+                safety_shoulder = self.safety_module.check_shoulder_safety()
+                if safety_shoulder:
+                    self.safety_shoulder = True
+            else:
+                if not self.safety_gripper:
+                    safety_gripper = self.safety_module.check_gripper_safety()
+                    if safety_gripper:
+                        self.safety_gripper = True
+                        self.safety_service_loop = False
+                        self.safety_mode_active = True
+                        self.sensor_module.set_color(LEDColors.READY)
+                        return True
+        return False
+    
+    def reset_safety_sequence(self):
+        """
+        Reset the security sequence variables.
+        Call every time you want to restart it..
+        """
+        self.safety_mode_active = False
+        self.safety_shoulder = False
+        self.safety_gripper = False
+        self.safety_service_loop = True
+        
+    # scan service
+    def scan_service(self):
+        while not self.scan_complete:
+            if self.scan_start:
+                scan_init = self.start_scan_service()
+                if scan_init:
+                    self.scan_start = False
+                    self.scan_update = True
+            elif self.scan_update:
+                scan_finish = self.update_scan_service()
+                if scan_finish:
+                    self.scan_update = False
+                    self.scan_mode_active = False
+                    self.scan_complete = True
+                    self.finish_scan_service(True, "")
+                    
+    def start_scan_service(self):
+        """Initialize scan service"""
+        if not self.safety_mode_active or not self.safety_shoulder or not self.safety_gripper:
+            return False
+        
+        if self.scan_complete:
+            return False
+        
+        self.scan_mode_active = True
+        self.scan_complete = False
+        self.scan_error = False
+        
         self.scan_start_time = time.time()
         self.accumulated_rotation = 0
         self.last_angle = self.sensor_module.get_angle()
+        
         self.control_module.rotate_base_forward()
         self.sensor_module.set_color(LEDColors.RUNNING)
+        return True
         
-    def update_scan(self):
+    def update_scan_service(self):
         current_angle = self.sensor_module.get_angle()
         
-        # calculate rotation
+        # Calculate rotation
         delta = current_angle - self.last_angle
         if delta > 180: delta -= 360
         elif delta < -180: delta += 360
         
-        self.accumulated_rotation += delta
+        self.accumulated_rotation += abs(delta)
         self.last_angle = current_angle
         
-        # process sensor data
+        # Process sensor data
         sensor_data = self.perception_module.process_sensor_data()
         self.mapping_module.process_object_detection(current_angle, sensor_data['size'])
         
-        # check if scan is complete
-        if abs(self.accumulated_rotation) >= 360 or time.time() - self.scan_start_time > self.scan_timeout:
-            self.control_module.general_stop()
-            self.state_manager.transition_to(RobotState.SCAN_COMPLETE)
+        # Check if scan is complete
+        if self.accumulated_rotation >= 360 or time.time() - self.scan_start_time > self.scan_timeout:
+            return True
+        
+        return False
+            
+    def finish_scan_service(self, success: bool, error_msg: str = ""):
+        """Finish scan service and report results"""
+        self.control_module.general_stop()
+        
+        if success:
+            self.scan_complete = True
+            self.sensor_module.set_color(LEDColors.READY)
+            # Send final map data
+            objects_map = self.mapping_module.get_objects_map()
+            
+    def reset_scan_sequence(self):
+        """
+        Reset the scan sequence variables.
+        Call every time you want to restart it..
+        """
+        self.scan_mode_active = False
+        self.scan_start_time = 0
+        self.scan_timeout = self.config.SAFETY_PARAMS['timeout']
+        self.accumulated_rotation = 0
+        self.last_angle = 0
+        self.scan_start = True
+        self.scan_update = False
+        self.scan_complete = False
+        self.scan_error = False
             
     # communication methods
-    def process_raspberry_message(self, message: dict):
-        """Process messages received from Raspberry Pi"""
-        if message['type'] == 'object_detected':
-            # Update mapping with object detection from camera
-            self.mapping_module.process_camera_detection(
-                message['data']['angle'],
-                message['data']['distance'],
-                message['data']['size']
-            )
+    def process_raspberry_message(self, message:dict):
+        """Process JSON messages from Raspberry Pi"""
+        if not message or 'type' not in message:
+            return
             
-        elif message['type'] == 'command':
-            # Process control commands
-            if message['data']['command'] == 'stop':
-                self.control_module.general_stop()
+        msg_type = message['type']
+        msg_data = message.get('data', {})
+        
+        if msg_type == 'command':
+            cmd = msg_data.get('command', '').lower()
+            
+            if cmd == 'check':
+                self.checked_once = True
+                
+            elif cmd == 'safety':
+                self.reset_safety_sequence()
+                self.safety_mode_active = True
+                
+            elif cmd == 'scan':
+                self.reset_scan_sequence()
+                self.scan_mode_active = True
+                
             
     # run method
     def run(self):
-        if self.communication.initialize():
-            while True:
-                try:
-                    self.update_state()
-                    time.sleep(0.02)
-                except Exception as e:
-                    self.sensor_module.set_color(LEDColors.ERROR)
-                    self.control_module.general_stop()
-                    self.state = RobotState.ERROR
-                    break
-        self.communication.close()
+        self.communication.initialize()
+        while True:
+            try:
+                # process incoming messages
+                message = self.communication.read_message()
+                
+                if message:
+                    self.sensor_module.print_screen("rx: {}".format(message), 1, 15)
+                    self.process_raspberry_message(message)
+                
+                # services
+                if self.checked_once:
+                    check_service = self.check_service()
+                    self.sensor_module.print_screen("check: {}".format("TRUE" if check_service else "FALSE"), 1, 35)
+                    
+                if self.safety_mode_active:
+                    safety_state = self.safety_state_service()
+                    self.sensor_module.print_screen("safety: {}".format("TRUE" if safety_state else "FALSE"), 1, 55)
+                    
+                if self.scan_mode_active:
+                    self.scan_service()
+                    self.sensor_module.print_screen("scan: {}".format("complete" if self.scan_complete else "error" if self.scan_error else "running"), 1, 75)
+                    
+            except Exception as e:
+                self.sensor_module.print_screen("Error: {}".format(str(e)[:20]), 1, 95)
+                self.control_module.general_stop()
+            
         
             
 if __name__ == "__main__":
-    arm_process = RoboticArmSystem()
+    arm_process = RoboticServices()
     arm_process.run()
         
