@@ -80,25 +80,6 @@ class CommunicationManager:
         except:
             raise Exception('serial port not available')
         
-    def send_message(self, message_type: str, data: dict) -> bool:
-        message = {
-            'type': message_type,
-            'data': data,
-            'timestamp': time.time()
-        }
-        encoded_message = json.dumps(message).encode() + self.message_end
-        self.serial_port.write(encoded_message)
-        return True
-    
-    def send_scan_data(self, scan_data: dict):
-        return self.send_message('scan_data', scan_data)
-        
-    def send_status(self, status: str, details: dict = {}):
-        data = {'status': status}
-        if details:
-            data.update(details)
-        return self.send_message('status', data)
-    
     def read_message(self):
         char = self.serial_port.read(1)
         if char == self.message_end:
@@ -111,6 +92,22 @@ class CommunicationManager:
         else:
             self.buffer.extend(char)
         return None
+        
+    def send_message(self, message_type: str, data: dict) -> bool:
+        if not self.serial_port:
+            return False
+        
+        message = {
+            'type': message_type,
+            'data': data,
+        }
+        encoded_message = json.dumps(message).encode() + self.message_end
+        self.serial_port.write(encoded_message)
+        return True
+    
+    def send_error(self, error_msg: str):
+        """Send error message"""
+        return self.send_message('error', {'error_msg': error_msg})
         
     def close(self):
         if self.serial_port:
@@ -156,9 +153,6 @@ class SensorModule:
     def get_gripper_distance(self):
         return self.gripper_distance.object_distance(MM)
     
-    def get_gripper_object_size(self):
-        return self.gripper_distance.object_rawsize()
-    
     # bumper methods
     def is_bumper_pressed(self):
         return self.bumper.pressing()
@@ -170,9 +164,6 @@ class SensorModule:
     def set_color(self, color):
         r, g, b = color
         self.touchled.set_color(r,g,b)
-        
-    def toggle(self):
-        self.touchled.toggle()
         
     # general methods
     def check_sensors(self):
@@ -219,15 +210,17 @@ class MappingModule:
             'start_angle': 0,
             'end_angle': 0,
             'max_size': 0,
+            'distance': 0,
             'is_tracking': False
         }
     
-    def process_object_detection(self, angle, object_size):
+    def process_object_detection(self, angle, object_size, distance):
         if object_size > 0:
             # new object detected
             if not self.current_object['is_tracking']:
                 self.current_object['start_angle'] = angle
                 self.current_object['is_tracking'] = True
+                self.current_object['distance'] = distance
                 self.current_object['max_size'] = object_size
             else:
                 self.current_object['max_size'] = max(self.current_object['max_size'], object_size)
@@ -255,19 +248,19 @@ class MappingModule:
         self.objects_map.append({
             'center_angle': center,
             'width': abs(end - start),
+            'distance': self.current_object['distance'],
             'max_size': self.current_object['max_size']
         })
         
         # reset tracking
         self.current_object['is_tracking'] = False
         self.current_object['max_size'] = 0
+        self.current_object['distance'] = 0
         
     def get_objects_map(self):
-        return self.objects_map
-    
-    def process_camera_detection(self, angle, distance, size):
-        # Implement camera detection processing logic here
-        pass
+        objects_detected = self.objects_map
+        self.objects_map = []
+        return objects_detected
     
 
 # ============================================================================ #
@@ -390,7 +383,7 @@ class RoboticServices:
         
         # -- Variables / banderas internas --
         # "check_service"
-        self.checked_once = False
+        self.check_mode_active = False
         
         # "safety_service"
         self.safety_mode_active = False
@@ -430,7 +423,6 @@ class RoboticServices:
         - when gripper finishes, it finishes everything.
         Returns True when the ENTIRE sequence is finished.
         """
-        
         while self.safety_service_loop ==  True:
             if not self.safety_shoulder:
                 safety_shoulder = self.safety_module.check_shoulder_safety()
@@ -471,13 +463,12 @@ class RoboticServices:
                     self.scan_update = False
                     self.scan_mode_active = False
                     self.scan_complete = True
-                    self.finish_scan_service(True, "")
+                    return True
+                    
+        return self.scan_complete
                     
     def start_scan_service(self):
         """Initialize scan service"""
-        if not self.safety_mode_active or not self.safety_shoulder or not self.safety_gripper:
-            return False
-        
         if self.scan_complete:
             return False
         
@@ -506,23 +497,16 @@ class RoboticServices:
         
         # Process sensor data
         sensor_data = self.perception_module.process_sensor_data()
-        self.mapping_module.process_object_detection(current_angle, sensor_data['size'])
-        
+        self.mapping_module.process_object_detection(current_angle, sensor_data['size'], sensor_data['distance']) 
+                
         # Check if scan is complete
         if self.accumulated_rotation >= 360 or time.time() - self.scan_start_time > self.scan_timeout:
+            self.control_module.general_stop()
             return True
         
         return False
             
-    def finish_scan_service(self, success: bool, error_msg: str = ""):
-        """Finish scan service and report results"""
-        self.control_module.general_stop()
-        
-        if success:
-            self.scan_complete = True
-            self.sensor_module.set_color(LEDColors.READY)
-            # Send final map data
-            objects_map = self.mapping_module.get_objects_map()
+
             
     def reset_scan_sequence(self):
         """
@@ -545,22 +529,19 @@ class RoboticServices:
         if not message or 'type' not in message:
             return
             
-        msg_type = message['type']
+        msg_type = message['type'].lower()
         msg_data = message.get('data', {})
-        
-        if msg_type == 'command':
-            cmd = msg_data.get('command', '').lower()
             
-            if cmd == 'check':
-                self.checked_once = True
-                
-            elif cmd == 'safety':
-                self.reset_safety_sequence()
-                self.safety_mode_active = True
-                
-            elif cmd == 'scan':
-                self.reset_scan_sequence()
-                self.scan_mode_active = True
+        if msg_type == 'check_service':
+            self.check_mode_active = True
+            
+        elif msg_type == 'safety_service':
+            self.reset_safety_sequence()
+            self.safety_mode_active = True
+            
+        elif msg_type == 'scan_service':
+            self.reset_scan_sequence()
+            self.scan_mode_active = True
                 
             
     # run method
@@ -576,17 +557,46 @@ class RoboticServices:
                     self.process_raspberry_message(message)
                 
                 # services
-                if self.checked_once:
+                if self.check_mode_active:
                     check_service = self.check_service()
                     self.sensor_module.print_screen("check: {}".format("TRUE" if check_service else "FALSE"), 1, 35)
+                    if check_service:
+                        data = {'state': 'approved'}
+                        self.communication.send_message('check_service', data)
+                        self.check_mode_active = False
+                    else:
+                        data = {'error': 'Sensors or motors not installed'}
+                        self.communication.send_message('check_service', data)
+                        self.check_mode_active = False
+                        
                     
                 if self.safety_mode_active:
                     safety_state = self.safety_state_service()
                     self.sensor_module.print_screen("safety: {}".format("TRUE" if safety_state else "FALSE"), 1, 55)
                     
+                    if safety_state:
+                        data = {
+                            'state': 'approved'
+                        }
+                        self.communication.send_message('safety_service', data)
+                        self.safety_mode_active = False
+                    else:
+                        self.safety_mode_active = False
+                    
                 if self.scan_mode_active:
-                    self.scan_service()
-                    self.sensor_module.print_screen("scan: {}".format("complete" if self.scan_complete else "error" if self.scan_error else "running"), 1, 75)
+                    scan_complete = self.scan_service()
+                    self.sensor_module.print_screen("scan: {}".format("TRUE" if self.scan_complete else "error" if self.scan_error else "SCANNING"), 1, 75)
+                    if scan_complete:
+                        objects_map = self.mapping_module.get_objects_map()
+                        data = {
+                            'state': 'complete',
+                            'objects': objects_map,
+                        }
+                        self.communication.send_message('scan_service', data)
+                        self.scan_mode_active = False
+                    else:
+                        self.scan_mode_active = False
+                        
                     
             except Exception as e:
                 self.sensor_module.print_screen("Error: {}".format(str(e)[:20]), 1, 95)
