@@ -14,56 +14,16 @@
 from vex import *
 import time
 import json
-    
-    
-# ============================================================================ #
-#                       configuration                                            #
-# ============================================================================ #
-class RobotConfig:
-    def __init__(self):
-        self.SENSOR_PARAMS = {
-            'distance_threshold': 300,
-            'min_distance': 50,
-            'calibration_time': 2
-        }
-        
-        self.MOTOR_PARAMS = {
-            'base': {'speed': 20, 'safety_speed': 10},
-            'shoulder': {'speed': 60, 'safety_speed': 10},
-            'elbow': {'speed': 20, 'safety_speed': 20},
-            'gripper': {'speed': 10, 'safety_speed': 20}
-        }
-        
-        self.SAFETY_PARAMS = {
-            'error_threshold': 3,
-            'current_limit': 0.3,
-            'timeout': 30
-        }
-        
 
 # ============================================================================ #
 #                       state management
 # ============================================================================ #
-class RobotState:
-    INIT = "init"
-    ERROR = "error"
-    SAFETY_SHOULDER = "safety_shoulder"
-    SAFETY_GRIPPER = "safety_gripper"
-    SCAN_INIT = "scan_init"
-    SCANNING = "scanning"
-    SCAN_COMPLETE = "scan_complete"
-    IDLE = "idle"
-    
-    
 class LEDColors:
     ERROR = (255, 0, 0)             # Red: Error/Stop
     WARNING = (255, 150, 0)         # Orange: Warning
     READY = (0, 255, 0)             # Green: Ready
     RUNNING = (0, 0, 255)           # Blue: Process Running
-    STANDBY = (255, 255, 0)         # Yellow: Standby
-    SETUP = (255, 255, 255)         # White: Setup
     OBJECT_DETECTED = (0, 255, 155) # Cyan: Object Detected
-    SERIAL = (150, 255, 0)
     
 # ============================================================================ #
 #                       communication manager                                  
@@ -104,10 +64,6 @@ class CommunicationManager:
         encoded_message = json.dumps(message).encode() + self.message_end
         self.serial_port.write(encoded_message)
         return True
-    
-    def send_error(self, error_msg: str):
-        """Send error message"""
-        return self.send_message('error', {'error_msg': error_msg})
         
     def close(self):
         if self.serial_port:
@@ -140,9 +96,6 @@ class SensorModule:
     def get_angle(self):
         return self.inertial.heading()
     
-    def get_orientation(self):
-        return self.inertial.orientation(OrientationType.YAW)
-    
     # distance methods
     def get_base_distance(self):
         return self.base_distance.object_distance(MM)
@@ -158,9 +111,6 @@ class SensorModule:
         return self.bumper.pressing()
     
     # touchled methods
-    def get_value(self):
-        return self.touchled.pressing()
-    
     def set_color(self, color):
         r, g, b = color
         self.touchled.set_color(r,g,b)
@@ -267,45 +217,22 @@ class MappingModule:
 #                       control module
 # ============================================================================ #
 class ControlModule:
-    def __init__(self, config: RobotConfig):
-        self.config = config
+    def __init__(self):
         self.base_motor = Motor(Ports.PORT1, True)
         self.shoulder_motor = Motor(Ports.PORT2, True)
         self.elbow_motor = Motor(Ports.PORT3, True)
         self.gripper_motor = Motor(Ports.PORT4, True)
         
-        self.speeds = self.config.MOTOR_PARAMS
+    # rotate motor methods
+    def rotate_motor_forward(self, motor, speed):
+        motor.spin(FORWARD, speed, RPM)
         
-    # base motor methods
-    def rotate_base_forward(self):
-        self.base_motor.spin(FORWARD, self.speeds['base']['speed'], RPM)
+    def rotate_motor_reverse(self, motor, speed):
+        motor.spin(REVERSE, speed, RPM)
         
-    def rotate_base_reverse(self):
-        self.base_motor.spin(REVERSE, self.speeds['base']['speed'], RPM)
-        
-    # shoulder motor methods
-    def move_shoulder_forward(self, speed):
-        self.shoulder_motor.spin(FORWARD, speed, RPM)
-        
-    def move_shoulder_reverse(self, speed):
-        self.shoulder_motor.spin(REVERSE, speed, RPM)
-        
-    # elbow motor methods
-    def move_elbow_forward(self, speed):
-        self.elbow_motor.spin(FORWARD, speed, RPM)
-        
-    def move_elbow_reverse(self, speed):
-        self.elbow_motor.spin(REVERSE, speed, RPM)
-        
-    # gripper motor methods
-    def open_gripper(self, speed):
-        self.gripper_motor.spin(FORWARD, speed, RPM)
-        
-    def close_gripper(self, speed):
-        self.gripper_motor.spin(REVERSE, speed, RPM)
-        
-    def get_gripper_current(self):
-        return self.gripper_motor.current()
+    # current motor methods
+    def get_current_motor(self, motor):
+        return motor.current()
     
     # general motor methods
     def general_stop(self):
@@ -325,15 +252,11 @@ class ControlModule:
 #                       safety module
 # ============================================================================ #
 class SafetyModule:
-    def __init__(self,config:RobotConfig, sensor_module: SensorModule, control_module: ControlModule):
-        self.config = config
+    def __init__(self, sensor_module: SensorModule, control_module: ControlModule):
         self.sensor_module = sensor_module
         self.control_module = control_module
         self.error_count = 0
         self.error_threshold = 3
-        
-        self.speeds = self.config.MOTOR_PARAMS
-        self.safety_params = self.config.SAFETY_PARAMS
     
     # check methods
     def check_motors(self):
@@ -346,20 +269,20 @@ class SafetyModule:
         if self.sensor_module.is_bumper_pressed():
             self.control_module.general_stop()
             self.sensor_module.set_color(LEDColors.ERROR)
-            self.control_module.move_shoulder_reverse(self.speeds['shoulder']['safety_speed'])
+            self.control_module.rotate_motor_reverse(self.control_module.shoulder_motor, 10)
             time.sleep(2)
             self.control_module.general_stop()
             return True
         else:
-            self.control_module.move_shoulder_forward(self.speeds['shoulder']['speed'])
+            self.control_module.rotate_motor_forward(self.control_module.shoulder_motor, 60)
             self.sensor_module.set_color(LEDColors.WARNING)
             return False
         
     def check_gripper_safety(self) -> bool:
-        gripper_current = self.control_module.get_gripper_current()
-        self.control_module.open_gripper(self.speeds['gripper']['safety_speed'])
+        gripper_current = self.control_module.get_current_motor(self.control_module.gripper_motor)
+        self.control_module.rotate_motor_forward(self.control_module.gripper_motor, 20)
 
-        if gripper_current > self.safety_params['current_limit']:
+        if gripper_current > 0.3:
             self.control_module.general_stop()
             return True
         else:
@@ -370,14 +293,12 @@ class SafetyModule:
 # ============================================================================ #
 class RoboticServices:
     def __init__(self):
-        self.config = RobotConfig()
-        
         # initialize modules
         self.sensor_module = SensorModule()
         self.perception_module = PerceptionModule(self.sensor_module)
         self.mapping_module = MappingModule()
-        self.control_module = ControlModule(self.config)
-        self.safety_module = SafetyModule(self.config, self.sensor_module, self.control_module)
+        self.control_module = ControlModule()
+        self.safety_module = SafetyModule(self.sensor_module, self.control_module)
         self.communication = CommunicationManager()
         
         
@@ -394,7 +315,7 @@ class RoboticServices:
         # "scan_service"
         self.scan_mode_active = False
         self.scan_start_time = 0
-        self.scan_timeout = self.config.SAFETY_PARAMS['timeout']
+        self.scan_timeout = 30
         self.accumulated_rotation = 0
         self.last_angle = 0
         self.scan_start = True
@@ -473,14 +394,10 @@ class RoboticServices:
             return False
         
         self.scan_mode_active = True
-        self.scan_complete = False
-        self.scan_error = False
         
         self.scan_start_time = time.time()
-        self.accumulated_rotation = 0
         self.last_angle = self.sensor_module.get_angle()
-        
-        self.control_module.rotate_base_forward()
+        self.control_module.rotate_motor_forward(self.control_module.base_motor, 20)
         self.sensor_module.set_color(LEDColors.RUNNING)
         return True
         
@@ -515,13 +432,12 @@ class RoboticServices:
         """
         self.scan_mode_active = False
         self.scan_start_time = 0
-        self.scan_timeout = self.config.SAFETY_PARAMS['timeout']
+        self.scan_timeout = 30
         self.accumulated_rotation = 0
         self.last_angle = 0
         self.scan_start = True
         self.scan_update = False
         self.scan_complete = False
-        self.scan_error = False
             
     # communication methods
     def process_raspberry_message(self, message:dict):
